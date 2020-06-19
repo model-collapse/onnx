@@ -27,6 +27,7 @@
 #include "onnx/optimizer/passes/lift_lexical_references.h"
 #include "onnx/optimizer/passes/nop.h"
 #include "onnx/optimizer/passes/split.h"
+#include "onnx/optimizer/passes/prune_zero_channel.h"
 #include "onnx/proto_utils.h"
 
 #include <unordered_set>
@@ -63,6 +64,7 @@ struct GlobalPassRegistry {
     registerPass<LiftLexicalReferences>();
     registerPass<SplitInit>();
     registerPass<SplitPredict>();
+    registerPass<PruneZeroChannels>();
   }
 
   ~GlobalPassRegistry() {

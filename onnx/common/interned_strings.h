@@ -165,7 +165,12 @@ namespace ONNX_NAMESPACE {
   _(Greater)                      \
   _(Less)                         \
   _(scales)                       \
-  _(Upsample)
+  _(Upsample)                     \
+  _(LeakyRelu)                    \
+  _(Clip)                         \
+  _(Relu)                         \
+  _(GlobalAveragePool)            \
+  _(Pool)
  
 enum BuiltinSymbol {
 #define DEFINE_SYMBOL(s) k##s,

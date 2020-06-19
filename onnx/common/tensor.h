@@ -6,11 +6,13 @@
 #include <cmath>
 #include <functional>
 #include <numeric>
+#include <set>
 #include "onnx/common/assertions.h"
 #include "onnx/onnx_pb.h"
 
 namespace ONNX_NAMESPACE {
 
+using std::to_string;
 struct Tensor final {
 private:
   bool is_segment_;
@@ -211,6 +213,12 @@ private:
   //Supported for
   //FLOAT16, FLOAT, DOUBLE
   void scale_by_first_dim(const Tensor& s);
+
+  // Sum along a given axis
+  // Template function
+  template<typename T> std::vector<T> abs_sum(int axis) const;
+
+  void delete_rows(int dim, const std::vector<int>& ids);
 };
 
 #define define_data(type, field)                  \
@@ -364,6 +372,114 @@ inline void Tensor::scale_by_first_dim(const Tensor& other) {
           "Operation scale_by_first_dim not supported for data type %s",
           to_string(elem_type_).c_str());
   }
+}
+
+template <typename T> 
+inline T abs_sum_of_block(const T *p, int64_t block_size) {
+  T ret = 0;
+  for (const T * pp = p; pp < p + block_size; pp++) {
+    ret += fabs(*pp);
+  }
+
+  return ret;
+}
+
+template <typename Ti, typename To> 
+inline void abs_sum_calc(const Ti *p, int64_t block_size, int64_t total_size, std::vector<To>& out) {
+  int32_t c = 0;
+  int32_t axis_size = out.size();
+  for (int32_t i = 0; i < axis_size; i++) {
+    out[i] = 0;
+  }
+
+  for (const Ti* pp = p; pp < p + total_size; pp += block_size) {
+    To s = abs_sum_of_block(pp, block_size);
+    out[c % axis_size] = s;
+    c++;
+  }
+}
+
+template <typename T> 
+inline std::vector<T> Tensor::abs_sum(int axis) const {
+  std::vector<T> ret;
+  if (axis < 0) {
+    axis += this->sizes().size();
+  }
+  ONNX_ASSERT(axis < this->sizes().size())
+  ret.resize(this->sizes()[axis]);
+
+  int64_t block_size = this->size_from_dim(axis + 1);
+
+  if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_FLOAT) {
+    abs_sum_calc(this->data<float>(), block_size, this->float_data_.size(), ret);
+  } else if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_DOUBLE) {
+    abs_sum_calc(this->data<double>(), block_size, this->double_data_.size(), ret);
+  } else {
+    TENSOR_ASSERTM(false, "Tesnor Value Types except floating values (Double, Float) is not supported here");
+  }
+
+  return ret;
+}
+
+template <typename T> 
+inline void delete_rows_vec(T* data, int64_t total_size, std::vector<T>& out, int32_t block_size, int32_t axis_size, const std::vector<int32_t>& ids) {
+  int32_t new_size = total_size - block_size * ids.size();
+  out.reserve(new_size);
+
+  std::set<int32_t> id_set;
+  for (auto id : ids) {
+    id_set.insert(id);
+  }
+
+  const T *p = data;
+  int32_t c = 0;
+  for (const T* pp = p; pp < p + total_size; pp += block_size) {
+    if (id_set.find(c % axis_size) == id_set.end()) {
+      out.insert(out.end(), pp, pp + block_size);
+    }
+  }
+
+  return;
+}
+
+inline void id_dedup(std::vector<int>& ids) {
+  std::sort(ids.begin(), ids.end());
+  for (std::vector<int>::iterator iter = ids.begin(); iter < ids.end() - 1; ) {
+    if (*iter == *(iter + 1)) {
+      iter = ids.erase(iter);
+    } else {
+      iter++;
+    }
+  }
+}
+
+inline void Tensor::delete_rows(int axis, const std::vector<int>& ids) {
+  if (axis < 0) {
+    axis += this->sizes().size();
+  }
+  ONNX_ASSERT(axis < this->sizes().size());
+  ONNX_ASSERT(this->sizes()[axis] > ids.size());
+  std::vector<int> dids = ids;
+  id_dedup(dids);
+
+  int32_t block_size = this->size_from_dim(axis + 1);
+  int32_t total_size = this->size_from_dim(0);
+  int32_t axis_size = this->sizes()[axis];
+  if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_FLOAT) {
+    std::vector<float> new_data;
+    delete_rows_vec(this->data<float>(), total_size, new_data, block_size, axis_size, dids);
+    this->float_data_ = new_data;
+    this->is_raw_data_ = false;
+  } else if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_DOUBLE) {
+    std::vector<double> new_data;
+    delete_rows_vec(this->data<double>(), total_size, new_data, block_size, axis_size, dids);
+    this->double_data_ = new_data;
+    this->is_raw_data_ = false;
+  } else {
+    TENSOR_ASSERTM(false, "Tesnor Value Types except floating values (Double, Float) is not supported here");
+  }
+
+  this->sizes_[axis] -= dids.size();
 }
 
 } // namespace ONNX_NAMESPACE

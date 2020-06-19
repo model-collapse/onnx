@@ -485,6 +485,7 @@ public:
   // implementation of std::vector could make this representationally
   // different.)
   ArrayRef<Value*> outputs() {
+    //fprintf(stderr, "hahaha---\n");
     return outputs_;
   }
   ArrayRef<const Value*> outputs() const {
@@ -1051,7 +1052,7 @@ public:
   }
 
   Value* addInitializerAndInput(const Tensor &initializer) {
-    return addInitializerAndInput(initializer, ONNX_NAMESPACE::to_string(next_unique_++));
+    return addInitializerAndInput(initializer, std::string("init_") + ONNX_NAMESPACE::to_string(next_unique_++));
   }
 
 
