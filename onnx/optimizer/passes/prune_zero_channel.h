@@ -26,9 +26,9 @@
 namespace ONNX_NAMESPACE {
 namespace optimization {
     struct DeleteOperation {
-        Node* src
-        int64_t axis;
-        std::vector<int64_t> ids;
+        Node* src;
+        int32_t axis;
+        std::vector<int32_t> ids;
     };
 
     struct PruneZeroChannels final : public PredicateBasedPass {
@@ -39,7 +39,7 @@ namespace optimization {
         const int32_t MUL_DIM_NUM = 2;
         const double ZERO_THRES = 0.00001;
         std::set<ONNX_NAMESPACE::NodeKind> activation_ops;
-        std::map<Node*, DeleteOperation> del_ops; 
+        std::map<Node*, std::vector<DeleteOperation>> del_ops; 
 
         explicit PruneZeroChannels()
             : PredicateBasedPass(
@@ -177,19 +177,129 @@ namespace optimization {
             }
         }
 
+        std::vector<int32_t> id_merge(const std::vector<int32_t>& a, const std::vector<int32_t>& b) {
+            std::set<int32_t> s;
+            for (auto aa : a) {
+                s.insert(aa);
+            }
+
+            for (auto bb : b) {
+                s.insert(bb);
+            }
+
+            std::vector<int32_t> ret;
+            for (auto r : s) {
+                ret.push_back(r);
+            }
+
+            return ret;
+        }
+
         bool finalizePass(Graph &graph) override {
             fprintf(stderr, "Finalizing it ...");
-
+            auto end_iter = graph.initializers().end();
             for (auto iter = this->del_ops.begin(); iter != this->del_ops.end(); iter++) {
                 Node* n = iter->first;
+                auto delist = iter->second;
+                auto s_inputs = n->inputs();
                 if (n->kind() == kBatchNormalization) {
+                    ONNX_ASSERTM(delist.size() == 1, "Batch normalization with multiple delete request!");
+                    ONNX_ASSERTM(delist[0].axis == FILTER_OUT_AXIS, "Cannot delete rows from other dimensions for batch normalization!");
+                    
+                    for (int32_t i = 0; i < 4; i++) {    
+                        auto w_iter = graph.getInitializer(s_inputs[i]->uniqueName());
+                        ONNX_ASSERT(w_iter != end_iter);
+                       
+                        auto zero_channels = delist[0].ids;
+                        Tensor nw = *w_iter;
+                        nw.delete_rows(FILTER_OUT_AXIS, zero_channels);
+                        fprintf(stderr, "BN deleted, replacing... \n");
+                        replace_initializer(n, graph, i, nw, s_inputs[i]);
+                        fprintf(stderr, "BN replaced \n");
+                    }
+                } else if (n->kind() == kConv || n->kind() == kMatMul) {
+                    const char* kind_str = "KConv";
+                    if (n->kind() == kMatMul) {
+                        kind_str = "kMatMul";
+                    }
 
-                } else if (n->kind() == kConv) {
+                    fprintf(stderr, "Deleting for %s", kind_str);
 
-                } else if (n->kind() == kMatMul) {
+                    if (delist.size() == 1) {
+                        fprintf(stderr, "deleting single!");
+                        auto w_iter = graph.getInitializer(s_inputs[1]->uniqueName());
+                        ONNX_ASSERT(w_iter != end_iter);
 
+                        auto zero_channels = delist[0].ids;
+                        int64_t axis = delist[0].axis;
+                        Tensor nw = *w_iter;
+                        nw.delete_rows(axis, zero_channels);
+                        fprintf(stderr, "W deleted, replacing... \n");
+                        replace_initializer(n, graph, 1, nw, s_inputs[1]);
+                        fprintf(stderr, "W replaced \n");
+
+                        auto b_iter = graph.getInitializer(s_inputs[2]->uniqueName());
+                        if (b_iter != end_iter && axis == FILTER_OUT_AXIS) {
+                            Tensor nb = *b_iter;
+                            nb.delete_rows(axis, zero_channels);
+                            fprintf(stderr, "B deleted, replacing... \n");
+                            replace_initializer(n, graph, 2, nb, s_inputs[2]);
+                            fprintf(stderr, "W replaced \n");
+                        }
+                    } else if (delist.size() <= 3) {
+                        std::sort(delist.begin(), delist.end(), [](const DeleteOperation& a, const DeleteOperation& b) -> bool {
+                            return a.axis < b.axis;
+                        });
+                        ONNX_ASSERTM(delist[1].axis == FILTER_IN_AXIS, "multiple deleting on output axis, please check your logic");
+
+                        int32_t cur = 0;
+                        if (delist[0].axis == FILTER_OUT_AXIS) {
+                            fprintf(stderr, "deleting single!");
+                            auto w_iter = graph.getInitializer(s_inputs[1]->uniqueName());
+                            ONNX_ASSERT(w_iter != end_iter);
+
+                            auto zero_channels = delist[0].ids;
+                            int64_t axis = delist[0].axis;
+                            Tensor nw = *w_iter;
+                            nw.delete_rows(axis, zero_channels);
+                            fprintf(stderr, "W deleted, replacing... \n");
+                            replace_initializer(n, graph, 1, nw, s_inputs[1]);
+                            fprintf(stderr, "W replaced \n");
+
+                            auto b_iter = graph.getInitializer(s_inputs[2]->uniqueName());
+                            if (b_iter != end_iter && axis == FILTER_OUT_AXIS) {
+                                Tensor nb = *b_iter;
+                                nb.delete_rows(axis, zero_channels);
+                                fprintf(stderr, "B deleted, replacing... \n");
+                                replace_initializer(n, graph, 2, nb, s_inputs[2]);
+                                fprintf(stderr, "W replaced \n");
+                            }
+
+                            cur = 1;
+                        } else {
+                            ONNX_ASSERTM(delist.size() == 2, "cannot accept three delete ops on input axis, pls check your network");
+                        }
+
+                        auto dids = delist[cur].ids;
+                        if (cur + 1 < delist.size()) {
+                            dids = id_merge(dids, delist[cur + 1].ids);
+                        }
+
+                        auto w_iter = graph.getInitializer(s_inputs[1]->uniqueName());
+                        ONNX_ASSERT(w_iter != end_iter);
+
+                        Tensor nw = *w_iter;
+                        nw.delete_rows(FILTER_IN_AXIS, dids);
+                        fprintf(stderr, "W - inputs deleted, replacing... \n");
+                        replace_initializer(n, graph, 1, nw, s_inputs[1]);
+                        fprintf(stderr, "W - inputs replaced \n");
+                    } else {
+                        ONNX_ASSERTM(false, "too many delte operations on one conv op, please check your network!");
+                    }
                 }
             }
+
+            return false;
         }
 
         bool runTransform(Node* n, Graph& graph, NodeDestroyType& destroy_current) {

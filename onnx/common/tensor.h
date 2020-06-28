@@ -246,9 +246,9 @@ private:
 
   // Sum along a given axis
   // Template function
-  template<typename T> std::vector<T> abs_sum(int axis) const;
+  template<typename T> std::vector<T> abs_sum(int32_t axis) const;
 
-  void delete_rows(int dim, const std::vector<int>& ids);
+  void delete_rows(int dim, const std::vector<int32_t>& ids);
 };
 
 #define define_data(type, field)                  \
@@ -430,7 +430,7 @@ inline void abs_sum_calc(const Ti *p, int64_t block_size, int64_t total_size, st
 }
 
 template <typename T> 
-inline std::vector<T> Tensor::abs_sum(int axis) const {
+inline std::vector<T> Tensor::abs_sum(int32_t axis) const {
   std::vector<T> ret;
   if (axis < 0) {
     axis += this->sizes().size();
@@ -496,7 +496,7 @@ inline void id_dedup(std::vector<int>& ids) {
   }
 }
 
-inline void Tensor::delete_rows(int axis, const std::vector<int>& ids) {
+inline void Tensor::delete_rows(int axis, const std::vector<int32_t>& ids) {
   if (axis < 0) {
     axis += this->sizes().size();
   }
