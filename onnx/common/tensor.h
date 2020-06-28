@@ -12,6 +12,30 @@
 
 namespace ONNX_NAMESPACE {
 
+inline void print_vec(std::string name, const std::vector<int64_t>& vec) {
+    fprintf(stderr, "%s = [", name.c_str());
+    for (int i = 0; i < vec.size() - 1; i++) {
+        fprintf(stderr, "%lld, ", vec[i]);
+    }
+    fprintf(stderr, "%lld]\n", vec[vec.size() - 1]);
+}
+
+inline void print_vec(std::string name, const std::vector<double>& vec) {
+    fprintf(stderr, "%s = [", name.c_str());
+    for (int i = 0; i < vec.size() - 1; i++) {
+        fprintf(stderr, "%f, ", vec[i]);
+    }
+    fprintf(stderr, "%f]\n", vec[vec.size() - 1]);
+}
+
+inline void print_vec(std::string name, const std::vector<int>& vec) {
+    fprintf(stderr, "%s = [", name.c_str());
+    for (int i = 0; i < vec.size() - 1; i++) {
+        fprintf(stderr, "%d, ", vec[i]);
+    }
+    fprintf(stderr, "%d]\n", vec[vec.size() - 1]);
+}
+
 using std::to_string;
 struct Tensor final {
 private:
@@ -63,6 +87,12 @@ private:
     if (dim < 0) {
       dim += (int)sizes_.size();
     }
+
+    if (dim == sizes_.size()) {
+      return 1;
+    }
+
+    fprintf(stderr, "dim = %d\n", dim);
     ONNX_ASSERT(dim >= 0 && (size_t)dim < sizes_.size());
     return std::accumulate(sizes_.begin() + dim, sizes_.end(), (int64_t)1, std::multiplies<int64_t>{});
   }
@@ -409,11 +439,14 @@ inline std::vector<T> Tensor::abs_sum(int axis) const {
   ret.resize(this->sizes()[axis]);
 
   int64_t block_size = this->size_from_dim(axis + 1);
+  int64_t total_size = this->size_from_dim(0);
+  //fprintf(stderr, "block size = %d\n", block_size);
 
+  fprintf(stderr, "abs sum, block_size = %d, total_size = %d\n", block_size, total_size);
   if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_FLOAT) {
-    abs_sum_calc(this->data<float>(), block_size, this->float_data_.size(), ret);
+    abs_sum_calc(this->data<float>(), block_size, total_size, ret);
   } else if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_DOUBLE) {
-    abs_sum_calc(this->data<double>(), block_size, this->double_data_.size(), ret);
+    abs_sum_calc(this->data<double>(), block_size, total_size, ret);
   } else {
     TENSOR_ASSERTM(false, "Tesnor Value Types except floating values (Double, Float) is not supported here");
   }
@@ -422,14 +455,21 @@ inline std::vector<T> Tensor::abs_sum(int axis) const {
 }
 
 template <typename T> 
-inline void delete_rows_vec(T* data, int64_t total_size, std::vector<T>& out, int32_t block_size, int32_t axis_size, const std::vector<int32_t>& ids) {
+inline void delete_rows_vec(const T* data, int64_t total_size, std::vector<T>& out, int32_t block_size, int32_t axis_size, const std::vector<int32_t>& ids) {
   int32_t new_size = total_size - block_size * ids.size();
-  out.reserve(new_size);
+  fprintf(stderr, "new size = %d\n", new_size);
 
+  TENSOR_ASSERTM(new_size > 0, "The allocated new size is invalid!");
+
+  out.reserve(new_size);
+  fprintf(stderr, "new vec [%d] reserved!\n", new_size);
+  
   std::set<int32_t> id_set;
   for (auto id : ids) {
     id_set.insert(id);
   }
+
+  fprintf(stderr, "set created\n");
 
   const T *p = data;
   int32_t c = 0;
@@ -437,7 +477,10 @@ inline void delete_rows_vec(T* data, int64_t total_size, std::vector<T>& out, in
     if (id_set.find(c % axis_size) == id_set.end()) {
       out.insert(out.end(), pp, pp + block_size);
     }
+    c++;
   }
+
+  fprintf(stderr, "final size = %d, new_size = %d\n", out.size(), new_size);
 
   return;
 }
@@ -457,29 +500,42 @@ inline void Tensor::delete_rows(int axis, const std::vector<int>& ids) {
   if (axis < 0) {
     axis += this->sizes().size();
   }
+
+  fprintf(stderr, "deleteing %d rows while shape[%d] = %d\n", ids.size(), axis, this->sizes()[axis]);
+
   ONNX_ASSERT(axis < this->sizes().size());
   ONNX_ASSERT(this->sizes()[axis] > ids.size());
   std::vector<int> dids = ids;
   id_dedup(dids);
+  print_vec("dids = ", dids);
 
   int32_t block_size = this->size_from_dim(axis + 1);
   int32_t total_size = this->size_from_dim(0);
+  fprintf(stderr, "block size = %d, total_size = %d\n", block_size, total_size);
+
   int32_t axis_size = this->sizes()[axis];
   if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_FLOAT) {
     std::vector<float> new_data;
+    fprintf(stderr, "here here here\n");
     delete_rows_vec(this->data<float>(), total_size, new_data, block_size, axis_size, dids);
     this->float_data_ = new_data;
     this->is_raw_data_ = false;
+    this->sizes_[axis] -= dids.size();
+    print_vec("dim after deleting", this->sizes_);
+
+    TENSOR_ASSERTM(this->size_from_dim(0) == this->float_data_.size(), "Inconsistent dimensions after deleting!");
   } else if (this->elem_type() == ONNX_NAMESPACE::TensorProto_DataType_DOUBLE) {
     std::vector<double> new_data;
     delete_rows_vec(this->data<double>(), total_size, new_data, block_size, axis_size, dids);
     this->double_data_ = new_data;
     this->is_raw_data_ = false;
+    this->sizes_[axis] -= dids.size();
+    print_vec("dim after deleting", this->sizes_);
+
+    TENSOR_ASSERTM(this->size_from_dim(0) == this->float_data_.size(), "Inconsistent dimensions after deleting!");
   } else {
     TENSOR_ASSERTM(false, "Tesnor Value Types except floating values (Double, Float) is not supported here");
   }
-
-  this->sizes_[axis] -= dids.size();
 }
 
 } // namespace ONNX_NAMESPACE
